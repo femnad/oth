@@ -15,6 +15,10 @@ fn main() {
         }
     }
 
+    if file_names.is_empty() {
+        return;
+    }
+
     let options = SkimOptionsBuilder::default()
         .multi(true)
         .preview(Some("git diff --color=always {}".to_string()))
