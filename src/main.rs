@@ -5,29 +5,30 @@ use std::path::Path;
 use std::process::Command;
 
 use clap::Parser;
-use git2::{Repository, Status, StatusOptions};
 use regex::Regex;
+use shlex;
 use skim::prelude::*;
 
 const DEFAULT_EDITOR: &str = "nvim";
-const DEFAULT_REMOTE: &str = "origin";
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct Args {
     #[arg(short, long)]
+    editor: Option<String>,
+    #[arg(short, long)]
     remote_diff: bool,
     #[arg(short, long)]
-    upstream_diff: bool,
+    selector: bool,
     #[arg(short, long)]
-    editor: Option<String>,
+    upstream_diff: bool,
 }
 
-fn get_default_branch(workdir_path: &Path) -> Option<String> {
-    let remote_head = workdir_path.join(format!(".git/refs/remotes/{}/HEAD", DEFAULT_REMOTE));
+fn get_default_branch(remote: &String, workdir_path: &Path) -> Option<String> {
+    let remote_head = workdir_path.join(format!(".git/refs/remotes/{}/HEAD", remote));
     let content = fs::read_to_string(remote_head).unwrap();
     let ref_line = content.trim();
-    let regex = Regex::new(format!("ref: refs/remotes/{}/(.*)", DEFAULT_REMOTE).as_str()).unwrap();
+    let regex = Regex::new(format!("ref: refs/remotes/{}/(.*)", remote).as_str()).unwrap();
     if let Some(captures) = regex.captures(ref_line) {
         return Some(captures[1].parse().unwrap());
     }
@@ -46,65 +47,64 @@ fn get_editor(editor: Option<String>) -> String {
     DEFAULT_EDITOR.to_string()
 }
 
-fn has_staged_files(repo: &Repository) -> bool {
-    let mut opts = StatusOptions::new();
-    opts.show(git2::StatusShow::Index);
-    let statuses = repo.statuses(Some(&mut opts)).unwrap();
-    !statuses.is_empty()
+fn git_output(args: Vec<&str>) -> String {
+    let stdout = Command::new("git").args(args).output().unwrap().stdout;
+    String::from_utf8_lossy(&stdout).trim().to_string()
+}
+
+fn get_remote() -> String {
+    git_output(vec!["remote"])
+}
+
+fn is_staged() -> bool {
+    !Command::new("git")
+        .args(&["diff", "--cached", "--shortstat"])
+        .output()
+        .unwrap()
+        .stdout
+        .is_empty()
 }
 
 fn main() {
     let args = Args::parse();
+    let workdir = git_output(vec!["rev-parse", "--show-toplevel"]);
+    let remote = get_remote();
+    let default_branch_name = get_default_branch(&remote, workdir.as_ref()).unwrap();
+    let staged_changes = is_staged();
 
-    let repo = Repository::discover(".").unwrap();
-    let workdir = repo.workdir().unwrap();
-
-    let default_branch_name = get_default_branch(&workdir).unwrap();
-    let mut staged_changes = false;
-
-    let diff = if args.upstream_diff {
-        let head = repo.head().unwrap();
-        let local_branch = git2::Branch::wrap(head);
-        let upstream_branch = local_branch.upstream().unwrap();
-
-        let local_tree = local_branch.get().peel_to_tree().unwrap();
-        let upstream_tree = upstream_branch.get().peel_to_tree().unwrap();
-        println!("{}", upstream_branch.name().unwrap().unwrap().to_owned());
-        repo.diff_tree_to_tree(Some(&upstream_tree), Some(&local_tree), None)
-            .unwrap()
+    let mut diff_cmd = if args.upstream_diff {
+        let branch = git_output(vec!["branch", "--show-current"]);
+        format!("diff {}/{}", remote, branch)
     } else if args.remote_diff {
-        let default_obj = repo.revparse_single(default_branch_name.as_str()).unwrap();
-        let default_tree = default_obj.peel_to_tree().unwrap();
-        let local_tree = repo.head().unwrap().peel_to_tree().unwrap();
-        repo.diff_tree_to_tree(Some(&default_tree), Some(&local_tree), None)
-            .unwrap()
-    } else if has_staged_files(&repo) {
-        staged_changes = true;
-        let head_tree = repo.head().unwrap().peel_to_tree().unwrap();
-        repo.diff_tree_to_index(Some(&head_tree), None, None).unwrap()
+        format!("diff {}/{}", remote, default_branch_name)
     } else {
-        repo.diff_tree_to_workdir(None, None).unwrap()
+        format!("diff {}", default_branch_name)
     };
-    let mut file_names = Vec::new();
-
-    for delta in diff.deltas() {
-        if let Some(path) = delta.new_file().path() {
-            file_names.push(path.to_string_lossy().into_owned())
-        }
+    if staged_changes {
+        diff_cmd = format!("{} --cached", diff_cmd);
     }
+    let files_cmd = format!("{} --name-only", diff_cmd);
+
+    let cmd_vec = shlex::split(files_cmd.as_str()).expect("error parsing command string");
+    let git_arg = cmd_vec.iter().map(|s| s.as_str()).collect::<Vec<&str>>();
+    let file_names = git_output(git_arg)
+        .split('\n')
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+        .collect::<Vec<String>>();
 
     if file_names.is_empty() {
         return;
     }
 
-    let preview = if args.remote_diff {
-        format!("git diff {} --color=always {{}}", default_branch_name)
-    } else if staged_changes {
-        "git diff --cached --color=always {}".to_string()
-    } else {
-        "git diff --color=always {}".to_string()
-    };
+    if !args.selector {
+        file_names.iter().for_each(|s| {
+            println!("{}", s);
+        });
+        return;
+    }
 
+    let preview = format!("git {} --color=always", diff_cmd);
     let options = SkimOptionsBuilder::default()
         .multi(true)
         .preview(Some(preview))
