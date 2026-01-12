@@ -16,8 +16,8 @@ const DEFAULT_EDITOR: &str = "nvim";
 struct Args {
     #[arg(short, long)]
     editor: Option<String>,
-    #[arg(short, long)]
-    remote: Option<String>,
+    #[arg(long)]
+    remote_override: Option<String>,
     #[arg(short, long)]
     remote_diff: bool,
     #[arg(short, long)]
@@ -76,7 +76,11 @@ fn is_staged() -> bool {
 fn main() {
     let args = Args::parse();
     let workdir = git_output(vec!["rev-parse", "--show-toplevel"]);
-    let remote = get_remote();
+    let remote = if args.remote_override.is_some() {
+        args.remote_override.unwrap()
+    } else {
+        get_remote()
+    };
     let default_branch_name = get_default_branch(&remote, workdir.as_ref()).unwrap();
     let staged_changes = is_staged();
 
