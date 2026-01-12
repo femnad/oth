@@ -116,7 +116,7 @@ fn main() {
         return;
     }
 
-    let preview = format!("git {} --color=always", diff_cmd);
+    let preview = format!("git {} --color=always -- {{}}", diff_cmd);
     let options = SkimOptionsBuilder::default()
         .multi(true)
         .preview(Some(preview))
