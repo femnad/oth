@@ -17,6 +17,8 @@ struct Args {
     #[arg(short, long)]
     editor: Option<String>,
     #[arg(short, long)]
+    remote: Option<String>,
+    #[arg(short, long)]
     remote_diff: bool,
     #[arg(short, long)]
     selector: bool,
@@ -53,7 +55,13 @@ fn git_output(args: Vec<&str>) -> String {
 }
 
 fn get_remote() -> String {
-    git_output(vec!["remote"])
+    let full_name = git_output(vec![
+        "rev-parse",
+        "--abbrev-ref",
+        "--symbolic-full-name",
+        "@{u}",
+    ]);
+    full_name.split('/').nth(0).unwrap().to_string()
 }
 
 fn is_staged() -> bool {
