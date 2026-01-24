@@ -4,18 +4,26 @@ use std::io::Cursor;
 use std::path::Path;
 use std::process::Command;
 
-use clap::Parser;
+use clap::{ArgGroup,Parser};
 use regex::Regex;
 use shlex;
 use skim::prelude::*;
 
 const DEFAULT_EDITOR: &str = "nvim";
+const REMOTE_FALLBACK: &str = "origin";
 
 #[derive(Parser, Debug)]
-#[command(version, about, long_about = None)]
+#[command(
+  group(ArgGroup::new("diff").args(["branch_diff", "remote_diff", "upstream_diff"])),
+  version,
+  about,
+  long_about = None
+)]
 struct Args {
     #[arg(short, long)]
     editor: Option<String>,
+    #[arg(short, long)]
+    branch_diff: bool,
     #[arg(long)]
     remote_override: Option<String>,
     #[arg(short, long)]
@@ -28,7 +36,8 @@ struct Args {
 
 fn get_default_branch(remote: &String, workdir_path: &Path) -> Option<String> {
     let remote_head = workdir_path.join(format!(".git/refs/remotes/{}/HEAD", remote));
-    let content = fs::read_to_string(remote_head).unwrap();
+    let content = fs::read_to_string(remote_head.clone()).expect(
+        format!("Could not read remote HEAD {}", remote_head.display()).as_str());
     let ref_line = content.trim();
     let regex = Regex::new(format!("ref: refs/remotes/{}/(.*)", remote).as_str()).unwrap();
     if let Some(captures) = regex.captures(ref_line) {
@@ -49,9 +58,15 @@ fn get_editor(editor: Option<String>) -> String {
     DEFAULT_EDITOR.to_string()
 }
 
-fn git_output(args: Vec<&str>) -> String {
-    let stdout = Command::new("git").args(args).output().unwrap().stdout;
-    String::from_utf8_lossy(&stdout).trim().to_string()
+fn git_output(args: Vec<&str>) -> Result<String, String> {
+    let cmd = args.join(" ");
+    let output = Command::new("git").args(args).output().expect(
+        format!("error running command {}", cmd).as_str());
+    if !output.status.success() {
+        return Err(String::from_utf8(output.stderr).unwrap());
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    Ok(stdout)
 }
 
 fn get_remote() -> String {
@@ -61,7 +76,10 @@ fn get_remote() -> String {
         "--symbolic-full-name",
         "@{u}",
     ]);
-    full_name.split('/').nth(0).unwrap().to_string()
+    if full_name.is_err() {
+        return REMOTE_FALLBACK.to_string();
+    }
+    full_name.expect("error getting remote").split('/').nth(0).unwrap().to_string()
 }
 
 fn is_staged() -> bool {
@@ -75,7 +93,8 @@ fn is_staged() -> bool {
 
 fn main() {
     let args = Args::parse();
-    let workdir = git_output(vec!["rev-parse", "--show-toplevel"]);
+    let workdir = git_output(vec!["rev-parse", "--show-toplevel"])
+        .expect("error getting workdir");
     let remote = if args.remote_override.is_some() {
         args.remote_override.unwrap()
     } else {
@@ -84,13 +103,19 @@ fn main() {
     let default_branch_name = get_default_branch(&remote, workdir.as_ref()).unwrap();
     let staged_changes = is_staged();
 
-    let mut diff_cmd = if args.upstream_diff {
-        let branch = git_output(vec!["branch", "--show-current"]);
+    let mut diff_cmd = if args.branch_diff {
+        format!("diff {}", default_branch_name)
+    } else if args.upstream_diff {
+        let branch = git_output(vec!["branch", "--show-current"])
+            .expect("error getting branch");
         format!("diff {}/{}", remote, branch)
     } else if args.remote_diff {
         format!("diff {}/{}", remote, default_branch_name)
     } else {
-        format!("diff {}", default_branch_name)
+        let rev_list_count = git_output(vec!["rev-list", "--count", "HEAD",
+                                             format!("^{}", default_branch_name).as_str()])
+            .expect("error getting rev list");
+        format!("diff HEAD~{}", rev_list_count)
     };
     if staged_changes {
         diff_cmd = format!("{} --cached", diff_cmd);
@@ -100,6 +125,7 @@ fn main() {
     let cmd_vec = shlex::split(files_cmd.as_str()).expect("error parsing command string");
     let git_arg = cmd_vec.iter().map(|s| s.as_str()).collect::<Vec<&str>>();
     let file_names = git_output(git_arg)
+        .expect("error getting file names")
         .split('\n')
         .filter(|s| !s.is_empty())
         .map(String::from)
