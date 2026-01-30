@@ -4,7 +4,7 @@ use std::io::Cursor;
 use std::path::Path;
 use std::process::Command;
 
-use clap::{ArgGroup,Parser};
+use clap::{Parser, ValueEnum};
 use regex::Regex;
 use shlex;
 use skim::prelude::*;
@@ -12,26 +12,30 @@ use skim::prelude::*;
 const DEFAULT_EDITOR: &str = "nvim";
 const REMOTE_FALLBACK: &str = "origin";
 
+#[derive(Debug, Clone, PartialEq, Eq, ValueEnum)]
+enum DiffMode {
+    Branch,
+    Remote,
+    Revlist,
+    RevlistRemote,
+    Upstream,
+}
+
 #[derive(Parser, Debug)]
 #[command(
-  group(ArgGroup::new("diff").args(["branch_diff", "remote_diff", "upstream_diff"])),
   version,
   about,
   long_about = None
 )]
 struct Args {
+    #[arg(short, long, value_enum, default_value = "revlist-remote")]
+    diff_mode: DiffMode,
     #[arg(short, long)]
     editor: Option<String>,
-    #[arg(short, long)]
-    branch_diff: bool,
     #[arg(long)]
     remote_override: Option<String>,
     #[arg(short, long)]
-    remote_diff: bool,
-    #[arg(short, long)]
     selector: bool,
-    #[arg(short, long)]
-    upstream_diff: bool,
 }
 
 fn get_default_branch(remote: &String, workdir_path: &Path) -> Option<String> {
@@ -103,19 +107,30 @@ fn main() {
     let default_branch_name = get_default_branch(&remote, workdir.as_ref()).unwrap();
     let staged_changes = is_staged();
 
-    let mut diff_cmd = if args.branch_diff {
-        format!("diff {}", default_branch_name)
-    } else if args.upstream_diff {
-        let branch = git_output(vec!["branch", "--show-current"])
-            .expect("error getting branch");
-        format!("diff {}/{}", remote, branch)
-    } else if args.remote_diff {
-        format!("diff {}/{}", remote, default_branch_name)
-    } else {
-        let rev_list_count = git_output(vec!["rev-list", "--count", "HEAD",
-                                             format!("^{}", default_branch_name).as_str()])
-            .expect("error getting rev list");
-        format!("diff HEAD~{}", rev_list_count)
+    let mut diff_cmd = match args.diff_mode {
+        DiffMode::Branch => {
+            format!("diff {}", default_branch_name)
+        },
+        DiffMode::Upstream => {
+            let branch = git_output(vec!["branch", "--show-current"])
+                .expect("error getting branch");
+            format!("diff {}/{}", remote, branch)
+        },
+        DiffMode::Remote => {
+            format!("diff {}/{}", remote, default_branch_name)
+        },
+        DiffMode::Revlist => {
+            let rev_list_count = git_output(vec!["rev-list", "--count", "HEAD",
+                                                 format!("^{}", default_branch_name).as_str()])
+                .expect("error getting rev list");
+            format!("diff HEAD~{}", rev_list_count)
+        },
+        DiffMode::RevlistRemote => {
+            let rev_list_count = git_output(vec!["rev-list", "--count", "HEAD",
+                                                 format!("^{}", default_branch_name).as_str()])
+                .expect("error getting rev list");
+            format!("diff {}/HEAD~{}", remote, rev_list_count)
+        },
     };
     if staged_changes {
         diff_cmd = format!("{} --cached", diff_cmd);
