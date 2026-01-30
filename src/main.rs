@@ -166,7 +166,7 @@ fn main() {
 
     let item_reader = SkimItemReader::default();
     let items = item_reader.of_bufread(Cursor::new(file_names.join("\n")));
-    let skim_out = Skim::run_with(&options, Some(items)).unwrap();
+    let skim_out = Skim::run_with(options, Some(items)).unwrap();
 
     if skim_out.is_abort {
         return;
