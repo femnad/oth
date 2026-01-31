@@ -10,6 +10,7 @@ use shlex;
 use skim::prelude::*;
 
 const DEFAULT_EDITOR: &str = "nvim";
+const RELATIVE_REFERENCE: &str = "../";
 const REMOTE_FALLBACK: &str = "origin";
 
 #[derive(Debug, Clone, PartialEq, Eq, ValueEnum)]
@@ -40,8 +41,8 @@ struct Args {
 
 fn get_default_branch(remote: &String, workdir_path: &Path) -> Option<String> {
     let remote_head = workdir_path.join(format!(".git/refs/remotes/{}/HEAD", remote));
-    let content = fs::read_to_string(remote_head.clone()).expect(
-        format!("Could not read remote HEAD {}", remote_head.display()).as_str());
+    let content = fs::read_to_string(remote_head.clone())
+        .expect(format!("Could not read remote HEAD {}", remote_head.display()).as_str());
     let ref_line = content.trim();
     let regex = Regex::new(format!("ref: refs/remotes/{}/(.*)", remote).as_str()).unwrap();
     if let Some(captures) = regex.captures(ref_line) {
@@ -64,8 +65,10 @@ fn get_editor(editor: Option<String>) -> String {
 
 fn git_output(args: Vec<&str>) -> Result<String, String> {
     let cmd = args.join(" ");
-    let output = Command::new("git").args(args).output().expect(
-        format!("error running command {}", cmd).as_str());
+    let output = Command::new("git")
+        .args(args)
+        .output()
+        .expect(format!("error running command {}", cmd).as_str());
     if !output.status.success() {
         return Err(String::from_utf8(output.stderr).unwrap());
     }
@@ -83,22 +86,81 @@ fn get_remote() -> String {
     if full_name.is_err() {
         return REMOTE_FALLBACK.to_string();
     }
-    full_name.expect("error getting remote").split('/').nth(0).unwrap().to_string()
+    full_name
+        .expect("error getting remote")
+        .split('/')
+        .nth(0)
+        .unwrap()
+        .to_string()
 }
 
 fn is_staged() -> bool {
     !Command::new("git")
         .args(&["diff", "--cached", "--shortstat"])
         .output()
-        .unwrap()
+        .expect("error running git")
         .stdout
         .is_empty()
 }
 
+#[cfg(test)]
+mod tests {
+    use crate::relativize;
+
+    // use super::*;
+    #[test]
+    fn test_relativize() {
+        assert_eq!(relativize("foo/bar/baz", "foo/hey"), "../../hey");
+        assert_eq!(relativize("foo/bar/baz", "readme.md"), "../../../readme.md");
+    }
+}
+
+fn relativize(from: &str, to: &str) -> String {
+    // current path foo/bar/baz
+    // changed file foo/hey
+    // change files foo/bar/zoo
+    // changed file baz/qux
+    // changed file fred/baz/qux
+    // changed file barn
+    if from.is_empty() {
+        return to.to_string();
+    }
+    let from = if from.starts_with("/") {
+        from.strip_prefix("/").expect("error stripping prefix")
+    } else {
+        from
+    };
+    let to_path = Path::new(&to);
+    let to_dir = to_path
+        .parent()
+        .expect("error getting parent dir")
+        .to_str()
+        .expect("error getting parent dir");
+    let to_file = to_path.file_name().expect("error getting file name");
+    let from_parts = from.split("/");
+    let to_parts = to_dir.split("/");
+    for (i, from_part) in from_parts.clone().enumerate() {
+        let to_nth = to_parts.clone().nth(i);
+        if to_nth.is_some() {
+            let to_part = to_nth.unwrap();
+            if from_part == to_part {
+                continue;
+            }
+        }
+        let from_remaining = from_parts.clone().skip(i).count();
+        let from_paths = String::from(RELATIVE_REFERENCE).repeat(from_remaining);
+        return from_paths + to_file.to_str().expect("error getting file name");
+    }
+
+    to_path
+        .to_str()
+        .expect("error getting file name")
+        .to_string()
+}
+
 fn main() {
     let args = Args::parse();
-    let workdir = git_output(vec!["rev-parse", "--show-toplevel"])
-        .expect("error getting workdir");
+    let workdir = git_output(vec!["rev-parse", "--show-toplevel"]).expect("error getting workdir");
     let remote = if args.remote_override.is_some() {
         args.remote_override.unwrap()
     } else {
@@ -110,27 +172,35 @@ fn main() {
     let mut diff_cmd = match args.diff_mode {
         DiffMode::Branch => {
             format!("diff {}", default_branch_name)
-        },
+        }
         DiffMode::Upstream => {
-            let branch = git_output(vec!["branch", "--show-current"])
-                .expect("error getting branch");
+            let branch =
+                git_output(vec!["branch", "--show-current"]).expect("error getting branch");
             format!("diff {}/{}", remote, branch)
-        },
+        }
         DiffMode::Remote => {
             format!("diff {}/{}", remote, default_branch_name)
-        },
+        }
         DiffMode::Revlist => {
-            let rev_list_count = git_output(vec!["rev-list", "--count", "HEAD",
-                                                 format!("^{}", default_branch_name).as_str()])
-                .expect("error getting rev list");
+            let rev_list_count = git_output(vec![
+                "rev-list",
+                "--count",
+                "HEAD",
+                format!("^{}", default_branch_name).as_str(),
+            ])
+            .expect("error getting rev list");
             format!("diff HEAD~{}", rev_list_count)
-        },
+        }
         DiffMode::RevlistRemote => {
-            let rev_list_count = git_output(vec!["rev-list", "--count", "HEAD",
-                                                 format!("^{}", default_branch_name).as_str()])
-                .expect("error getting rev list");
+            let rev_list_count = git_output(vec![
+                "rev-list",
+                "--count",
+                "HEAD",
+                format!("^{}", default_branch_name).as_str(),
+            ])
+            .expect("error getting rev list");
             format!("diff {}/HEAD~{}", remote, rev_list_count)
-        },
+        }
     };
     if staged_changes {
         diff_cmd = format!("{} --cached", diff_cmd);
@@ -149,6 +219,23 @@ fn main() {
     if file_names.is_empty() {
         return;
     }
+
+    let cwd = env::current_dir().unwrap();
+    let current_dir = cwd
+        .to_str()
+        .expect("error getting current directory")
+        .strip_prefix(workdir.as_str())
+        .expect("error striping prefix");
+    let file_names = file_names
+        .iter()
+        .map(|f| {
+            let abs_path = Path::new(workdir.as_str()).join(f);
+            let file_path = abs_path
+                .strip_prefix(workdir.as_str())
+                .expect("error striping prefix");
+            relativize(current_dir, file_path.to_str().expect("error getting path"))
+        })
+        .collect::<Vec<String>>();
 
     if !args.selector {
         file_names.iter().for_each(|s| {
