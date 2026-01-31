@@ -9,6 +9,7 @@ use regex::Regex;
 use shlex;
 use skim::prelude::*;
 
+const DEFAULT_BRANCH_FALLBACK: &str = "main";
 const DEFAULT_EDITOR: &str = "nvim";
 const RELATIVE_REFERENCE: &str = "../";
 const REMOTE_FALLBACK: &str = "origin";
@@ -41,9 +42,12 @@ struct Args {
 
 fn get_default_branch(remote: &String, workdir_path: &Path) -> Option<String> {
     let remote_head = workdir_path.join(format!(".git/refs/remotes/{}/HEAD", remote));
-    let content = fs::read_to_string(remote_head.clone())
-        .expect(format!("Could not read remote HEAD {}", remote_head.display()).as_str());
-    let ref_line = content.trim();
+    let remote_head = fs::read_to_string(remote_head.clone());
+    if remote_head.is_err() {
+        return Some(DEFAULT_BRANCH_FALLBACK.to_string());
+    };
+    let head_str = remote_head.unwrap();
+    let ref_line = head_str.as_str().trim();
     let regex = Regex::new(format!("ref: refs/remotes/{}/(.*)", remote).as_str()).unwrap();
     if let Some(captures) = regex.captures(ref_line) {
         return Some(captures[1].parse().unwrap());
