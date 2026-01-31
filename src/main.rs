@@ -21,6 +21,7 @@ enum DiffMode {
     Revlist,
     RevlistRemote,
     Upstream,
+    TripleDot,
 }
 
 #[derive(Parser, Debug)]
@@ -30,7 +31,7 @@ enum DiffMode {
   long_about = None
 )]
 struct Args {
-    #[arg(short, long, value_enum, default_value = "revlist-remote")]
+    #[arg(short, long, value_enum, default_value = "triple-dot")]
     diff_mode: DiffMode,
     #[arg(short, long)]
     editor: Option<String>,
@@ -204,6 +205,9 @@ fn main() {
             ])
             .expect("error getting rev list");
             format!("diff {}/HEAD~{}", remote, rev_list_count)
+        }
+        DiffMode::TripleDot => {
+            format!("diff {}...", default_branch_name)
         }
     };
     if staged_changes {
